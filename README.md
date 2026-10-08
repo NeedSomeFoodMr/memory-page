@@ -6,6 +6,16 @@ memory bank from a phone or a browser.
 Hindsight comes with its own web page for managing a bank. This one does less on purpose: it is for
 reading what the memory holds, it works on a phone, and it cannot change anything.
 
+![The overview on a desktop: counts of notes, patterns, facts and experiences, then the latest notes](docs/overview-desktop.png)
+
+<p>
+  <img src="docs/overview-phone.png" width="32%" alt="The overview on a phone, with the sections in a bar at the bottom">
+  <img src="docs/search-phone.png" width="32%" alt="Search results on a phone, closest match first">
+  <img src="docs/ask-phone.png" width="32%" alt="A question answered from the memory, on a phone">
+</p>
+
+The notes in these pictures are made up.
+
 ## What it shows
 
 | Section | What is there |
@@ -18,6 +28,8 @@ reading what the memory holds, it works on a phone, and it cannot change anythin
 
 It follows the device's light or dark setting. On a phone the sections sit in a bar at the bottom; on
 a wide screen they move to the side.
+
+![A note in the light theme, with the memory drawn from it](docs/note-light.png)
 
 ## How read-only works
 
