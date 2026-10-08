@@ -7,6 +7,8 @@
 #   HINDSIGHT_UPSTREAM  where Hindsight's API listens (default: hindsight:8888)
 #   PAGE_HOSTS          the names or addresses this page is opened by, space-separated
 #                       (default: localhost 127.0.0.1)
+#   REVIEW_UPSTREAM     where the optional review service listens, as host:port. Leave it unset
+#                       and the page stays read-only, with no Review section.
 {
 	admin off
 	auto_https off
@@ -59,6 +61,18 @@
 				reverse_proxy {$HINDSIGHT_UPSTREAM:hindsight:8888} {
 					header_up Authorization "Bearer {$HINDSIGHT_API_KEY}"
 				}
+			}
+
+			# Review, when it is switched on. These calls go to the review service, never to Hindsight:
+			# that service alone decides what may be written, and it can only retire a fact, bring one
+			# back, and remember what was looked at. No key is added here.
+			@review {
+				method GET POST
+				path /review/marks /review/retire /review/restore
+			}
+
+			handle @review {
+				reverse_proxy {$REVIEW_UPSTREAM:127.0.0.1:9}
 			}
 
 			handle {

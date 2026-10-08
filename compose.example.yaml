@@ -16,3 +16,20 @@ services:
     volumes:
       - ./memory-page/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./memory-page/site:/srv:ro
+
+  # Optional: the Review section. Without this service the page is read-only.
+  # To switch it on, also set REVIEW_UPSTREAM: memory-review:8080 on memory-page above.
+  memory-review:
+    image: python:3.13-alpine
+    restart: unless-stopped
+    command: python /app/review.py
+    # Runs as you, so it can write its one file into ./memory-page/review-data. Create that folder
+    # first, owned by this same user id (check yours with `id -u`), or the service cannot save.
+    user: "1000:1000"
+    environment:
+      HINDSIGHT_API_KEY: ${HINDSIGHT_API_KEY}
+      HINDSIGHT_BANK: default
+      HINDSIGHT_UPSTREAM: hindsight:8888
+    volumes:
+      - ./memory-page/review/review.py:/app/review.py:ro
+      - ./memory-page/review-data:/data

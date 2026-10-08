@@ -1,7 +1,9 @@
 'use strict'
 
-// A reader for a Hindsight memory bank. It only ever reads: lists, lookups, search and questions.
+// A reader for a Hindsight memory bank: lists, lookups, search and questions.
 // Everything goes through /api, which the server in front of this page limits to those calls.
+// Where the review service is switched on there is one more section, Review, which can retire a fact
+// and bring it back. Nothing here can change a memory's words or delete one.
 
 const PAGE = 30
 const MOST = 200
@@ -13,6 +15,7 @@ const ICONS = {
   home: 'M3 10.5 12 3l9 7.5M5.5 9v11h13V9',
   notes: 'M6 3h9l4 4v14H6zM14.5 3v4.5H19M9 12h7M9 16h7',
   memories: 'M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z',
+  review: 'M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM8.5 12.3l2.4 2.4 4.6-5',
   search: 'M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM15.5 15.5 20 20',
   ask: 'M4 5h16v11H9.5L5 20v-4H4z',
   back: 'M14 6l-6 6 6 6',
@@ -22,6 +25,7 @@ const TABS = [
   { key: 'home', label: 'Overview', href: '#/' },
   { key: 'notes', label: 'Notes', href: '#/notes' },
   { key: 'memories', label: 'Memories', href: '#/memories' },
+  { key: 'review', label: 'Review', href: '#/review' },
   { key: 'search', label: 'Search', href: '#/search' },
   { key: 'ask', label: 'Ask', href: '#/ask' },
 ]
@@ -36,6 +40,7 @@ let turns = []
 let drawing = 0
 let here = location.hash
 let asking = null
+let marks = null
 
 /** Builds an element. Text only ever enters the page as text nodes. */
 function h(tag, props, ...kids) {
@@ -349,10 +354,14 @@ async function memory(id) {
     (one.entities ?? []).length ? ['Mentions', h('div', { class: 'chips' }, one.entities.map(each => chip(each, '#/search' + query({ q: each }))))] : null,
     one.document_id ? ['Note', h('a', { class: 'more', href: '#/note/' + encodeURIComponent(one.document_id) }, 'Open the note it came from')] : null,
   ].filter(Boolean)
+  const curated = marks === null || one.type === 'observation' ? null : one.state === 'invalidated'
+    ? h('div', { class: 'section' }, state('empty', 'This fact is retired. The memory no longer uses it.'), restoring(one, () => route({ stay: true })))
+    : h('div', { class: 'section' }, retiring(one, () => {}))
 
   return page(KINDS[one.type] ?? 'Memory', null,
     h('div', { class: 'panel' }, h('p', { class: 'body' }, said)),
     h('dl', { class: 'facts section' }, rows.map(([name, value]) => [h('dt', null, name), h('dd', null, value)])),
+    curated,
     sources.length === 0 ? null : section(`Put together from (${sources.length})`, null, h('ul', { class: 'list' }, sources.map(each => memoryRow(each)))),
     changes.length === 0 ? null : section(`How it read before (${changes.length})`, null, h('ul', { class: 'list' }, changes.map(was =>
       h('li', null, h('div', { class: 'item' }, h('div', { class: 'text' }, parted(was.previous_text ?? was.text ?? '').said), h('div', { class: 'meta' }, `until ${dated(was.changed_at ?? was.created_at, TIME)}`)))))))
@@ -467,6 +476,200 @@ function askPage() {
   return asking
 }
 
+// ---------------------------------------------------------------- review
+
+/** Every pattern in the bank, fetched a page at a time. */
+async function patterns() {
+  const all = []
+
+  for (;;) {
+    const got = await kept('/memories/list' + query({ type: 'observation', limit: MOST, offset: all.length }))
+    all.push(...got.items)
+    if (got.items.length === 0 || all.length >= got.total) return all
+  }
+}
+
+/** A pattern is waiting if it was never looked at, or has been rebuilt since. */
+const waiting = async () => (await patterns()).filter(each => marks.get(each.id) !== each.updated_at)
+
+async function counted() {
+  const left = await waiting().then(all => all.length, () => 0)
+
+  due.hidden = left === 0
+  due.textContent = left > 99 ? '99+' : String(left)
+
+  return left
+}
+
+const act = (label, onclick, quiet = true) => h('button', { class: 'button small' + (quiet ? ' quiet' : ''), type: 'button', onclick }, label)
+
+/** Runs one write, with the buttons of `row` held while it is under way and the reason shown if it fails. */
+async function writing(row, path, body) {
+  const buttons = [...row.querySelectorAll('button')]
+  buttons.forEach(button => { button.disabled = true })
+  row.querySelector('.error')?.remove()
+
+  try {
+    return await api(path, body)
+  } catch (problem) {
+    buttons.forEach(button => { button.disabled = false })
+    row.append(state('error', problem.message))
+
+    return null
+  }
+}
+
+/** "Bring back" for a retired fact. */
+function restoring(fact, then) {
+  const row = h('div', { class: 'actions' })
+
+  row.append(act('Bring back', async () => {
+    if (await writing(row, '/review/restore', { id: fact.id }) === null) return
+    cache.clear()
+    row.replaceChildren(state('empty', 'Brought back. The memory will use it again.'))
+    counted()
+    then()
+  }))
+
+  return row
+}
+
+/** "Retire this fact", which first asks why. What it leaves behind can undo it. */
+function retiring(fact, then) {
+  const row = h('div', { class: 'actions' })
+  const open = () => row.replaceChildren(act('Retire this fact', ask))
+
+  const ask = () => {
+    const why = h('input', { class: 'input', type: 'text', maxlength: '300', placeholder: 'Why? (optional)', 'aria-label': 'Why this fact is wrong', autocomplete: 'off' })
+    const form = h('form', { class: 'field wrap', onsubmit: async event => {
+      event.preventDefault()
+      if (await writing(row, '/review/retire', { id: fact.id, reason: why.value }) === null) return
+      cache.clear()
+      row.replaceChildren(state('empty', 'Retired. The memory is rebuilding without it.'), restoring(fact, () => {}))
+      counted()
+      then()
+    } }, why, h('button', { class: 'button small', type: 'submit' }, 'Retire'), act('Cancel', open))
+
+    row.replaceChildren(form)
+    why.focus()
+  }
+
+  open()
+
+  return row
+}
+
+/** One pattern in the queue: its words, then "Looks right" or a look at the facts it was built from. */
+function reviewRow(pattern, onGone) {
+  const under = h('div', { class: 'sources', hidden: true })
+  const row = h('li', { class: 'review' })
+
+  const choices = h('div', { class: 'actions' })
+  let isSettled = false
+
+  // The pattern is dealt with, one way or the other: it stops counting as waiting.
+  const settle = () => {
+    if (isSettled) return
+    isSettled = true
+    onGone()
+  }
+
+  const right = async () => {
+    if (await writing(row, '/review/marks', { id: pattern.id, seen: pattern.updated_at }) === null) return
+    marks.set(pattern.id, pattern.updated_at)
+    ;(row.nextElementSibling ?? row.previousElementSibling)?.querySelector('button')?.focus({ preventScroll: true })
+    row.remove()
+    settle()
+  }
+
+  // Once a fact behind it is retired, the memory drops this pattern and builds a new one, which will
+  // turn up here by itself. So this row keeps only the result, and the way to undo it.
+  const retiredOne = () => {
+    choices.replaceChildren(state('empty', 'The memory is rebuilding this pattern. The new one will show up here.'))
+    settle()
+  }
+
+  const off = async () => {
+    if (!under.hidden) { under.hidden = true; return }
+    under.hidden = false
+    under.replaceChildren(state('loading', 'Finding where this came from'))
+
+    try {
+      const full = await kept('/memories/' + encodeURIComponent(pattern.id))
+      const sources = full.source_memories ?? []
+
+      under.replaceChildren(
+        h('p', { class: 'hint' }, sources.length === 0 ? 'The memory did not say which facts this came from.'
+          : 'This was put together from the facts below. Retire the one that is wrong and the memory rebuilds the pattern without it. A retired fact can be brought back.'),
+        ...sources.map(fact => h('div', { class: 'source' },
+          h('div', { class: 'text' }, parted(fact.text).said),
+          h('div', { class: 'meta' }, kindOf(fact.type), dated(fact.occurred_start ?? fact.mentioned_at) ? h('span', { class: 'sep' }, dated(fact.occurred_start ?? fact.mentioned_at)) : null),
+          retiring(fact, retiredOne))))
+    } catch (problem) {
+      under.replaceChildren(state('error', problem.message))
+    }
+  }
+
+  const when = dated(pattern.occurred_start ?? pattern.date ?? pattern.mentioned_at)
+
+  row.append(
+    h('div', { class: 'item' },
+      h('div', { class: 'text whole' }, parted(pattern.text).said),
+      h('div', { class: 'meta' },
+        kindOf('observation'),
+        when ? h('span', { class: 'sep' }, when) : null,
+        pattern.proof_count > 1 ? h('span', { class: 'sep' }, `from ${pattern.proof_count} memories`) : null,
+        (pattern.tags ?? []).slice(0, 3).map(tag => h('span', { class: 'chip' }, tag))),
+      choices),
+    under)
+  choices.append(act('Looks right', right, false), act('Something is off', off))
+
+  return row
+}
+
+async function review(params) {
+  if (marks === null) return page('Review', 'Review is not switched on for this page.')
+
+  const showing = params.get('show') === 'retired' ? 'retired' : 'queue'
+  const tabs = h('div', { class: 'seg', role: 'group', 'aria-label': 'What to show' },
+    h('button', { 'aria-pressed': String(showing === 'queue'), onclick: () => { location.hash = '#/review' } }, 'To look at'),
+    h('button', { 'aria-pressed': String(showing === 'retired'), onclick: () => { location.hash = '#/review?show=retired' } }, 'Retired'))
+
+  if (showing === 'retired') {
+    const gone = await api('/memories/list' + query({ state: 'invalidated', limit: MOST }))
+
+    return page('Review', 'Facts you retired. The memory keeps them but no longer uses them.', h('div', { class: 'bar' }, tabs),
+      gone.items.length === 0 ? state('empty', 'Nothing is retired.') : h('ul', { class: 'list' }, gone.items.map(fact => h('li', { class: 'review' },
+        h('div', { class: 'item' },
+          h('div', { class: 'text whole' }, parted(fact.text).said),
+          h('div', { class: 'meta' }, kindOf(fact.fact_type), h('span', { class: 'sep' }, `retired ${dated(fact.invalidated_at, TIME)}`), fact.invalidation_reason ? h('span', { class: 'sep' }, fact.invalidation_reason) : null),
+          restoring(fact, () => {}))))))
+  }
+
+  const queue = await waiting()
+  const lede = h('p', { class: 'lede' })
+  const list = h('ul', { class: 'list' })
+  const more = h('div', { class: 'center' })
+  let left = queue.length
+  let drawn = 0
+
+  const told = () => { lede.textContent = left === 0 ? 'Nothing is waiting. Every pattern the memory formed has been looked at.' : `${left} ${left === 1 ? 'pattern' : 'patterns'} the memory formed by itself. Say which look right.` }
+  const gone = () => { left -= 1; told(); counted(); if (list.children.length === 0 && drawn < queue.length) show() }
+
+  const show = () => {
+    const next = queue.slice(drawn, drawn + PAGE)
+    drawn += next.length
+    list.append(...next.map(each => reviewRow(each, gone)))
+    more.replaceChildren(drawn < queue.length ? act(`Show more (${queue.length - drawn} left)`, show) : '')
+  }
+
+  told()
+  show()
+  counted()
+
+  return h('div', { class: 'page' }, h('header', { class: 'head' }, h('h1', null, 'Review'), lede), h('div', { class: 'bar' }, tabs), list, more)
+}
+
 // ---------------------------------------------------------------- routing
 
 const ROUTES = [
@@ -475,6 +678,7 @@ const ROUTES = [
   [/^\/note\/(.+)$/, 'notes', match => note(decodeURIComponent(match[1])), '#/notes', 'Notes'],
   [/^\/memories$/, 'memories', (_, params) => memories(params)],
   [/^\/memory\/(.+)$/, 'memories', match => memory(decodeURIComponent(match[1])), '#/memories', 'Memories'],
+  [/^\/review$/, 'review', (_, params) => review(params)],
   [/^\/search$/, 'search', (_, params) => search(params)],
   [/^\/ask$/, 'ask', async () => askPage()],
 ]
@@ -482,10 +686,12 @@ const ROUTES = [
 // The bar is built once and only its current mark moves, so it never blinks between pages.
 const links = new Map(TABS.map(tab => [tab.key, h('a', { class: 'tab', href: tab.href }, icon(tab.key), tab.label)]))
 
-nav.replaceChildren(
-  h('div', { class: 'brand' }, icon('memories'), 'Memory'),
-  ...links.values(),
-  h('div', { class: 'foot' }, 'Read only. Nothing here can change or delete a memory.'))
+const foot = h('div', { class: 'foot' }, 'Read only. Nothing here can change or delete a memory.')
+const due = h('small', { class: 'badge', hidden: true })
+
+links.get('review').hidden = true
+links.get('review').append(due)
+nav.replaceChildren(h('div', { class: 'brand' }, icon('memories'), 'Memory'), ...links.values(), foot)
 
 function markNav(current) {
   for (const [key, link] of links) {
@@ -541,6 +747,22 @@ async function route({ stay = false } = {}) {
   places.set(to, place)
 }
 
+/**
+ * Finds out whether the review service is there. If it is, the Review section appears and the count of
+ * patterns waiting is shown on it; if not, the page stays as it was, read-only.
+ */
+async function reviewing() {
+  try {
+    marks = new Map(Object.entries((await api('/review/marks')).marks ?? {}))
+  } catch {
+    return
+  }
+
+  links.get('review').hidden = false
+  foot.textContent = 'Review can retire a fact, and bring it back. Nothing here can rewrite or delete a memory.'
+  counted()
+}
+
 if ('scrollRestoration' in history) history.scrollRestoration = 'manual'
 
 window.addEventListener('scroll', () => places.set(here, window.scrollY), { passive: true })
@@ -558,4 +780,5 @@ document.addEventListener('visibilitychange', () => {
   if (!location.hash.startsWith('#/ask')) route({ stay: true })
 })
 
+reviewing().then(() => { if (location.hash.startsWith('#/review') || location.hash.startsWith('#/memory/')) route({ stay: true }) })
 route()

@@ -232,10 +232,31 @@ details.based[open] summary::before { content: "\2212"; }
 details.based .list { margin-top: 4px; padding-left: 16px; }
 details.based .item { padding: 9px 0; font-size: 13.5px; }
 
+/* Review */
+[hidden] { display: none !important; }
+.badge { white-space: nowrap; overflow-wrap: normal; min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 11px; font-weight: 650; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.nav a.tab .badge { margin-left: auto; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.actions .empty, .actions .error { padding: 0; margin: 0; font-size: 13.5px; }
+.button.small { padding: 7px 13px; font-size: 13.5px; border-radius: 8px; }
+.field.wrap { flex: 1; flex-wrap: wrap; align-items: center; }
+.field.wrap .input { flex: 1 1 200px; padding: 7px 11px; }
+.item .text.whole { display: block; overflow: visible; }
+.sources { margin: 0 2px 16px; padding: 2px 0 2px 14px; border-left: 2px solid var(--line); }
+.sources .hint { margin: 0 0 4px; }
+.source { padding: 12px 0; border-top: 1px solid var(--line-soft); }
+.source:first-of-type { border-top: 0; }
+
+@media (max-width: 759px) {
+  .nav a.tab { position: relative; }
+  .nav a.tab .badge { position: absolute; top: 4px; left: calc(50% + 9px); margin: 0; min-width: 16px; line-height: 16px; font-size: 10px; }
+}
+
 /* Under a finger, links and small buttons get room. Under a mouse they stay compact. */
 @media (pointer: coarse) {
   a.chip { min-height: 36px; padding-inline: 12px; }
   .seg button { min-height: 38px; }
   .more, .back { min-height: 40px; display: inline-flex; align-items: center; }
   .facts { row-gap: 10px; }
+  .button.small { min-height: 40px; }
 }
