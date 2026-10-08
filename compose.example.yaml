@@ -1,0 +1,18 @@
+# Add this service to the compose file that runs Hindsight, with this folder saved beside it as ./memory-page.
+# The page then reaches Hindsight by its service name on the compose network.
+services:
+  memory-page:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      # This machine only. Reach it over a private network, or put a sign-in in front of it.
+      - "127.0.0.1:9998:9998"
+    environment:
+      HINDSIGHT_API_KEY: ${HINDSIGHT_API_KEY}
+      HINDSIGHT_BANK: default
+      HINDSIGHT_UPSTREAM: hindsight:8888
+      # The names you open the page by, without the port. Any other name is refused.
+      PAGE_HOSTS: "localhost 127.0.0.1"
+    volumes:
+      - ./memory-page/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./memory-page/site:/srv:ro

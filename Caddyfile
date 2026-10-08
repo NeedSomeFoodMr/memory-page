@@ -1,0 +1,74 @@
+# The memory page: a static reader, plus a narrow read-only path to a Hindsight bank.
+# The page never holds the key. It is added here, and only for the calls listed below.
+#
+# Settings, all from the environment:
+#   HINDSIGHT_API_KEY   the bearer key Hindsight expects (may be empty)
+#   HINDSIGHT_BANK      the bank to read (default: default)
+#   HINDSIGHT_UPSTREAM  where Hindsight's API listens (default: hindsight:8888)
+#   PAGE_HOSTS          the names or addresses this page is opened by, space-separated
+#                       (default: localhost 127.0.0.1)
+{
+	admin off
+	auto_https off
+}
+
+:9998 {
+	encode zstd gzip
+
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Cache-Control "no-cache"
+		-Server
+	}
+
+	route {
+		# Answer only under the names this page is really opened by. Without this, another website
+		# could point a name of its own at this server and read the bank through a visitor's browser.
+		@stranger not host {$PAGE_HOSTS:localhost 127.0.0.1}
+		respond @stranger "This page is not served under that name." 421
+
+		handle_path /api/* {
+			request_body {
+				max_size 16KB
+			}
+
+			# Lookups. GET only, and only these parts of the bank.
+			@read {
+				method GET
+				path /stats /stats/memories-timeseries /tags /documents /documents/* /memories/list /memories/*
+				not path_regexp (^|/)\.\.(/|$)
+			}
+
+			# Search and questions. They are sent as POST, and neither writes anything.
+			@ask {
+				method POST
+				path /memories/recall /reflect
+			}
+
+			handle @read {
+				rewrite * /v1/default/banks/{$HINDSIGHT_BANK:default}{uri}
+				reverse_proxy {$HINDSIGHT_UPSTREAM:hindsight:8888} {
+					header_up Authorization "Bearer {$HINDSIGHT_API_KEY}"
+				}
+			}
+
+			handle @ask {
+				rewrite * /v1/default/banks/{$HINDSIGHT_BANK:default}{uri}
+				reverse_proxy {$HINDSIGHT_UPSTREAM:hindsight:8888} {
+					header_up Authorization "Bearer {$HINDSIGHT_API_KEY}"
+				}
+			}
+
+			handle {
+				respond "This page can only read the memory." 403
+			}
+		}
+
+		handle {
+			root * /srv
+			file_server
+		}
+	}
+}
