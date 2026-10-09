@@ -2,8 +2,8 @@
 
 // A reader for a Hindsight memory bank: lists, lookups, search and questions.
 // Everything goes through /api, which the server in front of this page limits to those calls.
-// Where the review service is switched on there is one more section, Review, which can retire a fact
-// and bring it back. Nothing here can change a memory's words or delete one.
+// Where the review service is switched on there is one more section, Review, which can retire a fact,
+// bring it back, and save a correction as a new note. Nothing here can change a memory's words or delete one.
 
 const PAGE = 30
 const MOST = 200
@@ -82,7 +82,12 @@ async function api(path, body) {
     ? { headers: { accept: 'application/json' } }
     : { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(body) })
 
-  if (!res.ok) throw new Error(res.status === 403 ? 'That is not something this page may do.' : `The memory service answered ${res.status}.`)
+  if (!res.ok) {
+    // The review service says in words why it refused, and those words can matter: a correction may be half done.
+    const said = path.startsWith('/review/') ? (await res.json().catch(() => null))?.error : null
+
+    throw new Error(typeof said === 'string' && said !== '' ? said : res.status === 403 ? 'That is not something this page may do.' : `The memory service answered ${res.status}.`)
+  }
 
   return res.json()
 }
@@ -112,6 +117,13 @@ const dated = (value, format = DAY) => {
   return at === null || Number.isNaN(at.getTime()) ? '' : format.format(at)
 }
 
+/** Today's date where the reader is, as 2026-10-09. */
+const today = () => {
+  const now = new Date()
+
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+}
+
 const sentence = slug => {
   const words = slug.replace(/\.md$/, '').replace(/[-_]+/g, ' ').trim()
 
@@ -123,7 +135,8 @@ function named(doc) {
   const filed = /^([a-z][\w-]*)\/(?:\d{4}-\d{2}-\d{2}-)?(.+)$/i.exec(doc.id)
   const kind = filed === null ? (doc.tags?.[0] ?? 'note') : filed[1].replace(/s$/, '').replace(/-/g, ' ')
   const opening = (doc.original_text ?? '').replace(/\s+/g, ' ').trim()
-  const title = filed !== null ? sentence(filed[2]) : opening !== '' ? clipped(opening.replace(/^[A-Z][a-z]+ \([^)]*\):\s*/, '').split(/[.!?]\s/)[0].replace(/[.!?]$/, ''), 90) : sentence(doc.retain_params?.context ?? 'Note')
+  const isSlug = filed !== null && !/^[0-9a-f-]{8,}$/.test(filed[2])
+  const title = isSlug ? sentence(filed[2]) : opening !== '' ? clipped(opening.replace(/^[A-Z][a-z]+(?: from [^(:]{1,60})? \([^)]*\):\s*/, '').split(/[.!?]\s/)[0].replace(/[.!?]$/, ''), 90) : sentence(doc.retain_params?.context ?? 'Note')
 
   return { kind: sentence(kind), title }
 }
@@ -513,20 +526,22 @@ async function writing(row, path, body) {
     return await api(path, body)
   } catch (problem) {
     buttons.forEach(button => { button.disabled = false })
-    row.append(state('error', problem.message))
+    const said = state('error', problem.message)
+    row.append(said)
+    said.scrollIntoView({ block: 'nearest' })
 
     return null
   }
 }
 
-/** "Bring back" for a retired fact. */
-function restoring(fact, then) {
+/** "Bring back" for a retired fact. `said` is what to tell the reader once it is back. */
+function restoring(fact, then, said = 'Brought back. The memory will use it again.') {
   const row = h('div', { class: 'actions' })
 
   row.append(act('Bring back', async () => {
     if (await writing(row, '/review/restore', { id: fact.id }) === null) return
     cache.clear()
-    row.replaceChildren(state('empty', 'Brought back. The memory will use it again.'))
+    row.replaceChildren(state('empty', said))
     counted()
     then()
   }))
@@ -534,10 +549,31 @@ function restoring(fact, then) {
   return row
 }
 
-/** "Retire this fact", which first asks why. What it leaves behind can undo it. */
+/**
+ * The two things to do with a fact that should go. "Retire this fact" is for one that was never right,
+ * and asks why. "Out of date" is for one that was right once: it asks what is true now, saves that as a
+ * new note, and retires the old fact. What either leaves behind can bring the fact back.
+ */
 function retiring(fact, then) {
   const row = h('div', { class: 'actions' })
-  const open = () => row.replaceChildren(act('Retire this fact', ask))
+  const open = () => row.replaceChildren(act('Retire this fact', ask), act('Out of date', correct))
+
+  const correct = () => {
+    const now = h('textarea', { class: 'textarea', rows: '2', maxlength: '1000', required: true, placeholder: 'What is true now?', 'aria-label': 'What is true now' })
+    const form = h('form', { class: 'correcting', onsubmit: async event => {
+      event.preventDefault()
+      if (now.value.trim() === '') { now.focus(); return }
+      if (await writing(row, '/review/correct', { id: fact.id, note: now.value, day: today() }) === null) return
+      cache.clear()
+      row.replaceChildren(state('empty', 'Saved what is true now as a new note, and retired the old fact.'),
+        restoring(fact, () => {}, 'Brought back. The correction you saved is still in the memory as a note.'))
+      counted()
+      then()
+    } }, now, h('div', { class: 'actions' }, h('button', { class: 'button small', type: 'submit' }, 'Save and retire'), act('Cancel', open)))
+
+    row.replaceChildren(form)
+    now.focus()
+  }
 
   const ask = () => {
     const why = h('input', { class: 'input', type: 'text', maxlength: '300', placeholder: 'Why? (optional)', 'aria-label': 'Why this fact is wrong', autocomplete: 'off' })
@@ -600,7 +636,7 @@ function reviewRow(pattern, onGone) {
 
       under.replaceChildren(
         h('p', { class: 'hint' }, sources.length === 0 ? 'The memory did not say which facts this came from.'
-          : 'This was put together from the facts below. Retire the one that is wrong and the memory rebuilds the pattern without it. A retired fact can be brought back.'),
+          : 'This was put together from the facts below. Retire one that was never right, or mark one out of date and say what is true now. The memory then rebuilds the pattern. A retired fact can be brought back.'),
         ...sources.map(fact => h('div', { class: 'source' },
           h('div', { class: 'text' }, parted(fact.text).said),
           h('div', { class: 'meta' }, kindOf(fact.type), dated(fact.occurred_start ?? fact.mentioned_at) ? h('span', { class: 'sep' }, dated(fact.occurred_start ?? fact.mentioned_at)) : null),
@@ -759,7 +795,7 @@ async function reviewing() {
   }
 
   links.get('review').hidden = false
-  foot.textContent = 'Review can retire a fact, and bring it back. Nothing here can rewrite or delete a memory.'
+  foot.textContent = 'Review can retire a fact, bring it back, and save a correction. Nothing here can rewrite or delete a memory.'
   counted()
 }
 

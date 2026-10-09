@@ -51,9 +51,11 @@ Hindsight builds patterns by putting facts together, and a language model can ge
 is a place to check what it concluded without reading every entry.
 
 It lists the patterns you have not looked at, or that were rebuilt since you did. For each one you
-say it looks right, or open it to see the facts it was built from and retire the wrong one. Hindsight
-then drops the pattern and rebuilds it from what is left. A retired fact is kept, listed under
-Retired, and can be brought back. A pattern cannot be retired directly, because it is derived.
+say it looks right, or open it to see the facts it was built from. A fact that was never right you
+retire. A fact that was right once you mark out of date: you type what is true now, and that is saved
+as a new note before the old fact is retired. Either way Hindsight drops the pattern and rebuilds it
+from what is left. A retired fact is kept, listed under Retired, and can be brought back. A pattern
+cannot be retired directly, because it is derived.
 
 <p><img src="docs/review-phone.png" width="32%" alt="The Review section on a phone: patterns waiting, each with Looks right and Something is off"></p>
 
@@ -62,10 +64,20 @@ and point `REVIEW_UPSTREAM` at it. The page talks to that service, not to Hindsi
 
 - remember that a pattern was looked at (kept in a file, so every device sees the same list);
 - retire one fact, with an optional reason;
-- bring a retired fact back.
+- bring a retired fact back;
+- store a correction: a new note written around what you typed, quoting the fact it replaces.
 
-The service builds each request to Hindsight itself from a checked memory id. It cannot change a
-memory's words, delete anything, or reach another bank. It is one Python file with no dependencies.
+The service builds each request to Hindsight itself from a checked memory id and your own short text.
+It cannot change a memory's words, delete a memory, or reach another bank. It is one Python file with
+no dependencies.
+
+Three things to know about corrections:
+
+- A correction is stored like any other note, so your Hindsight's language model reads it once, and
+  again when the pattern is rebuilt. The page waits until the note is really stored before it retires
+  the old fact, which takes a few seconds.
+- Bringing back a fact you corrected does not remove the correction. You then have both.
+- Correcting the same fact twice on one day replaces the first correction's note with the second.
 
 ## Run it
 
@@ -102,6 +114,7 @@ docker compose up -d memory-page
 | `HINDSIGHT_UPSTREAM` | Where Hindsight's API listens, as `host:port` | `hindsight:8888` |
 | `PAGE_HOSTS` | The names or addresses you open the page by, separated by spaces, without the port. Requests under any other name are refused | `localhost 127.0.0.1` |
 | `REVIEW_UPSTREAM` | Where the review service listens, as `host:port`. Unset means no Review section | unset |
+| `REVIEW_AUTHOR` | On the review service: whose corrections these are. Named in each correction note | unset |
 
 To switch Review on, add the second service from [compose.example.yaml](compose.example.yaml) and set
 `REVIEW_UPSTREAM: memory-review:8080` on the page.
@@ -111,14 +124,15 @@ There is no build step. To change the page, edit the files in `site/` and reload
 ## Before you expose it
 
 - **There is no login.** Anyone who can reach the port can read the whole bank and ask it questions,
-  and with Review on, retire facts.
+  and with Review on, retire facts and add correction notes.
   The example binds to `127.0.0.1`. Reach it over a private network such as Tailscale or a VPN, or
   put your own sign-in in front of it. Do not put it on the open internet.
 - **Name the hosts you open it by.** If you reach the page as `http://my-server:9998`, add
   `my-server` to `PAGE_HOSTS`. The page refuses any other name, which stops another website from
   pointing a name of its own at your server and reading the bank through your browser.
 - **Ask spends your language model.** Each question is one reflect call on whatever model your
-  Hindsight uses. Search and browsing use none.
+  Hindsight uses. Search and browsing use none. With Review on, each correction spends it too, and
+  anyone who can reach the port can add a correction note under the name in `REVIEW_AUTHOR`.
 - It reads one bank, the one named in `HINDSIGHT_BANK`.
 
 ## Limits

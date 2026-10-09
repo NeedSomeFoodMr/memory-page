@@ -30,6 +30,8 @@ services:
       HINDSIGHT_API_KEY: ${HINDSIGHT_API_KEY}
       HINDSIGHT_BANK: default
       HINDSIGHT_UPSTREAM: hindsight:8888
+      # Optional: whose corrections these are. Each correction note then opens "Correction from <name>".
+      # REVIEW_AUTHOR: Sam
     volumes:
       - ./memory-page/review/review.py:/app/review.py:ro
       - ./memory-page/review-data:/data

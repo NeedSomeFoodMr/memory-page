@@ -241,6 +241,9 @@ details.based .item { padding: 9px 0; font-size: 13.5px; }
 .button.small { padding: 7px 13px; font-size: 13.5px; border-radius: 8px; }
 .field.wrap { flex: 1; flex-wrap: wrap; align-items: center; }
 .field.wrap .input { flex: 1 1 200px; padding: 7px 11px; }
+.correcting { flex: 1 1 100%; }
+.correcting .textarea { min-height: 64px; }
+.correcting .actions { margin-top: 8px; }
 .item .text.whole { display: block; overflow: visible; }
 .sources { margin: 0 2px 16px; padding: 2px 0 2px 14px; border-left: 2px solid var(--line); }
 .sources .hint { margin: 0 0 4px; }

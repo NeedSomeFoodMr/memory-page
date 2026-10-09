@@ -64,11 +64,11 @@
 			}
 
 			# Review, when it is switched on. These calls go to the review service, never to Hindsight:
-			# that service alone decides what may be written, and it can only retire a fact, bring one
-			# back, and remember what was looked at. No key is added here.
+			# that service alone decides what may be written. It can retire a fact, bring one back,
+			# store a correction note, and remember what was looked at. No key is added here.
 			@review {
 				method GET POST
-				path /review/marks /review/retire /review/restore
+				path /review/marks /review/retire /review/restore /review/correct
 			}
 
 			handle @review {

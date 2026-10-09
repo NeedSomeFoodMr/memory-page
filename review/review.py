@@ -1,19 +1,25 @@
 """The review service for the memory page.
 
-The page itself can only read. Review needs three small writes, and this service is the only thing
+The page itself can only read. Review needs a few small writes, and this service is the only thing
 that makes them, so that nothing wider can slip through:
 
   GET  /review/marks     which patterns have been looked at
   POST /review/marks     remember that a pattern was looked at
   POST /review/retire    retire one fact (Hindsight keeps it; it can be brought back)
   POST /review/restore   bring a retired fact back
+  POST /review/correct   retire one fact that is out of date, and store what is true now as a new note
 
-It never forwards a request. Each write to Hindsight is built here from a checked memory id and, for
-retire, a short reason. It cannot change a memory's words, delete anything, or reach another bank.
+It never forwards a request. Each write to Hindsight is built here from a checked memory id and, where
+there is one, the reader's own short text. It cannot change a memory's words, delete a memory, or reach
+another bank. The one thing it adds to the memory is a correction note, written around that text. A
+second correction of the same fact on the same day replaces the first one's note.
 
 Settings come from the environment: HINDSIGHT_UPSTREAM (host:port), HINDSIGHT_BANK, HINDSIGHT_API_KEY,
-REVIEW_DATA (where the marks file is kept, default /data) and REVIEW_PORT (default 8080).
+REVIEW_DATA (where the marks file is kept, default /data), REVIEW_PORT (default 8080) and REVIEW_AUTHOR
+(whose corrections these are, named in each correction note; optional).
 """
+import datetime
+import http.client
 import json
 import os
 import re
@@ -27,11 +33,16 @@ BANK = os.environ.get('HINDSIGHT_BANK', 'default')
 KEY = os.environ.get('HINDSIGHT_API_KEY', '')
 DATA = os.environ.get('REVIEW_DATA', '/data')
 PORT = int(os.environ.get('REVIEW_PORT', '8080'))
+AUTHOR = ' '.join(os.environ.get('REVIEW_AUTHOR', '').split())[:60]
 
 MARKS = os.path.join(DATA, 'marks.json')
 MEMORY_ID = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 BODY_MOST = 16 * 1024
 REASON_MOST = 300
+NOTE_MOST = 1000
+WAS_MOST = 2000
+TAGS_MOST = 8
+CONTROL = re.compile(r'[\x00-\x1f\x7f]')
 SEEN_MOST = 64
 MARKS_MOST = 20000
 BATCH_MOST = 500
@@ -125,27 +136,36 @@ def memory_id_of(value):
     return value
 
 
-def curate(memory_id, change):
-    """Sends one fixed change of state for one memory to Hindsight, and nothing else."""
+def hindsight(method, path, body=None, wait=60):
+    """One call to this bank in Hindsight. `path` is always built here, never taken from a request."""
     request = urllib.request.Request(
-        f'http://{UPSTREAM}/v1/default/banks/{BANK}/memories/{memory_id}', method='PATCH',
-        data=json.dumps(change).encode(), headers={'Authorization': f'Bearer {KEY}', 'content-type': 'application/json'})
+        f'http://{UPSTREAM}/v1/default/banks/{BANK}{path}', method=method,
+        data=None if body is None else json.dumps(body).encode(),
+        headers={'Authorization': f'Bearer {KEY}', 'content-type': 'application/json'})
 
     try:
-        with urllib.request.urlopen(request, timeout=60) as answer:
+        with urllib.request.urlopen(request, timeout=wait) as answer:
             told = json.loads(answer.read().decode())
     except urllib.error.HTTPError as problem:
         try:
             why = json.loads(problem.read().decode()).get('detail')
-        except ValueError:
+        except (ValueError, AttributeError):
             why = None
 
         raise Refused(problem.code if problem.code in (400, 404, 409, 422) else 502,
                       why if isinstance(why, str) else 'The memory service did not accept that.') from None
-    except (urllib.error.URLError, TimeoutError, ValueError):
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
         raise Refused(502, 'The memory service could not be reached.') from None
 
-    return {'id': memory_id, 'state': told.get('state')}
+    if not isinstance(told, dict):
+        raise Refused(502, 'The memory service gave an answer this service does not understand.')
+
+    return told
+
+
+def curate(memory_id, change):
+    """Sends one fixed change of state for one memory to Hindsight, and nothing else."""
+    return {'id': memory_id, 'state': hindsight('PATCH', f'/memories/{memory_id}', change).get('state')}
 
 
 def marked(body):
@@ -189,7 +209,80 @@ def restored(body):
     return curate(memory_id_of(body.get('id')), {'state': 'valid'})
 
 
-WRITES = {'/review/marks': marked, '/review/retire': retired, '/review/restore': restored}
+def day_of(given, now):
+    """The reader's own date for a correction, if it is a date within a day of the server's; else the server's.
+
+    The page sends the day where the reader is, so a correction made in the morning east of Greenwich is
+    not dated the day before. It is only ever used as a date: anything else is ignored.
+    """
+    today = now.date()
+
+    if isinstance(given, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', given):
+        try:
+            day = datetime.date.fromisoformat(given)
+        except ValueError:
+            return today.isoformat()
+
+        if abs((day - today).days) <= 1:
+            return day.isoformat()
+
+    return today.isoformat()
+
+
+def corrected(body):
+    """Stores what is true now as a new note, then retires the fact it replaces.
+
+    The note is written here, around the reader's words, and quotes the old fact so that it stands on
+    its own. It is stored first, and this waits until Hindsight has really stored it: if retiring then
+    fails, the old fact is still in use, the note exists, and trying again is safe.
+    """
+    memory_id = memory_id_of(body.get('id'))
+    note = body.get('note')
+
+    if not isinstance(note, str):
+        raise Refused(400, 'Say what is true now.')
+
+    note = ' '.join(CONTROL.sub(' ', note).split())
+
+    if not 0 < len(note) <= NOTE_MOST:
+        raise Refused(400, f'Say what is true now, in up to {NOTE_MOST} characters.')
+
+    old = hindsight('GET', f'/memories/{memory_id}')
+
+    if old.get('type') not in ('world', 'experience'):
+        raise Refused(400, 'Only a fact can be corrected. A pattern is rebuilt from its facts.')
+
+    if old.get('state') == 'invalidated':
+        raise Refused(409, 'That fact is already retired.')
+
+    was = ' '.join(CONTROL.sub(' ', str(old.get('text') or '').split(' | ')[0]).split())[:WAS_MOST]
+    tags = ['correction'] + [tag for tag in old.get('tags') or [] if isinstance(tag, str) and 0 < len(tag) <= 40 and tag != 'correction']
+    now = datetime.datetime.now(datetime.timezone.utc)
+    day = day_of(body.get('day'), now)
+    # One note per fact per day, under a name built here. Sending the same correction twice lands on the
+    # same note, so a retry after a failure cannot pile up copies.
+    name = f'corrections/{day}-{memory_id}'
+    stored = hindsight('POST', '/memories', {'async': False, 'items': [{
+        'content': f"Correction{' from ' + AUTHOR if AUTHOR else ''} ({day}): {note}\n\n"
+                   f'This replaces an earlier memory, which is now retired: "{was}"',
+        'context': 'Correction written in the Review section of the memory page',
+        'document_id': name,
+        'tags': tags[:TAGS_MOST],
+        'timestamp': now.isoformat(timespec='seconds'),
+    }]}, wait=150)
+
+    if stored.get('success') is not True:
+        raise Refused(502, 'The memory service did not store the correction. Nothing was changed.')
+
+    try:
+        done = curate(memory_id, {'state': 'invalidated', 'reason': note[:REASON_MOST]})
+    except Exception:
+        raise Refused(502, 'Your correction was saved as a note, but the old fact could not be retired. Try again, or retire it by hand.') from None
+
+    return {**done, 'note': name}
+
+
+WRITES = {'/review/marks': marked, '/review/retire': retired, '/review/restore': restored, '/review/correct': corrected}
 
 
 class Handler(BaseHTTPRequestHandler):
