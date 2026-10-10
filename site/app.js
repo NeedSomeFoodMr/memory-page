@@ -502,8 +502,14 @@ async function patterns() {
   }
 }
 
-/** A pattern is waiting if it was never looked at, or has been rebuilt since. */
-const waiting = async () => (await patterns()).filter(each => marks.get(each.id) !== each.updated_at)
+/**
+ * A pattern is a conclusion when the memory put it together from more than one memory. One built from a
+ * single memory only says that memory again, and that came from a note someone wrote on purpose.
+ */
+const isConclusion = each => (each.proof_count ?? 0) > 1
+
+/** A conclusion is waiting if it was never looked at, or has been rebuilt since. */
+const waiting = async () => (await patterns()).filter(each => isConclusion(each) && marks.get(each.id) !== each.updated_at)
 
 async function counted() {
   const left = await waiting().then(all => all.length, () => 0)
@@ -689,7 +695,7 @@ async function review(params) {
   let left = queue.length
   let drawn = 0
 
-  const told = () => { lede.textContent = left === 0 ? 'Nothing is waiting. Every pattern the memory formed has been looked at.' : `${left} ${left === 1 ? 'pattern' : 'patterns'} the memory formed by itself. Say which look right.` }
+  const told = () => { lede.textContent = (left === 0 ? 'Nothing is waiting.' : `${left} ${left === 1 ? 'pattern' : 'patterns'} the memory put together from more than one memory. Say which look right.`) + ' Patterns that only repeat one memory are not listed: they are under Memories.' }
   const gone = () => { left -= 1; told(); counted(); if (list.children.length === 0 && drawn < queue.length) show() }
 
   const show = () => {

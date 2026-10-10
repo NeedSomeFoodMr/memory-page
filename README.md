@@ -26,7 +26,7 @@ The notes in these pictures are made up.
 | Memories | The bank's memories by kind: patterns (what Hindsight concluded by putting notes together), facts and experiences. A memory opens to its details and, for a pattern, the memories it was built from |
 | Search | Hindsight's recall: finds memories by meaning, closest first |
 | Ask | Hindsight's reflect: answers a question from what the bank holds, and lists the memories it used |
-| Review (optional) | The patterns formed since you last looked. Say which look right, or open one to see the facts behind it and retire the wrong one |
+| Review (optional) | The patterns put together from more than one memory since you last looked. Say which look right, or open one to see the facts behind it and retire the wrong one |
 
 It follows the device's light or dark setting. On a phone the sections sit in a bar at the bottom; on
 a wide screen they move to the side.
@@ -50,7 +50,10 @@ export and import. The list is in the [Caddyfile](Caddyfile), and it is short en
 Hindsight builds patterns by putting facts together, and a language model can get a fact wrong. Review
 is a place to check what it concluded without reading every entry.
 
-It lists the patterns you have not looked at, or that were rebuilt since you did. For each one you
+It lists the patterns you have not looked at, or that were rebuilt since you did, and only those
+Hindsight put together from more than one memory. A pattern built from a single memory says that
+memory again, so asking about each would mean reading every note twice; those stay under Memories,
+where a wrong fact can be retired the same way. For each one listed you
 say it looks right, or open it to see the facts it was built from. A fact that was never right you
 retire. A fact that was right once you mark out of date: you type what is true now, and that is saved
 as a new note before the old fact is retired. Either way Hindsight drops the pattern and rebuilds it
